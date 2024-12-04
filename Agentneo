@@ -1,0 +1,175 @@
+"""
+This script demonstrates a multi-agent chat system using AgentNeo and OpenAI's GPT models. 
+It initializes a session for interacting with multiple agents that collaborate to create, refine, 
+and enhance a story based on the user's input. The script incorporates:
+- Configuration loading
+- Tracing with AgentNeo's Tracer
+- Group chat management with multiple agents
+"""
+
+# Import required modules
+from agentneo import AgentNeo, Tracer
+import autogen
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Set up the path for the configuration file
+env_or_file = "OAI_CONFIG_LIST.json"
+
+# Set OpenAI API key 
+os.environ["OPENAI_API_KEY"] = Your OpenAI API key"
+
+# --- CONFIGURATION SETUP ---
+def load_model_config():
+    """
+    Load model configurations from a JSON file, filtering specific models.
+
+    Returns:
+        list: Filtered configurations for supported models.
+    """
+    config_list = autogen.config_list_from_json(
+        env_or_file,
+        filter_dict={
+            "model": {
+                "gpt-35-turbo",
+                "gpt-3.5-turbo",
+                "gpt-3.5-turbo-16k",
+                "gpt-3.5-turbo-0301",
+                "chatgpt-35-turbo-0301",
+                "gpt-35-turbo-v0301",
+                "gpt-4o-mini",
+            },
+        },
+    )
+    return config_list
+
+# Load and verify model configurations
+config_list = load_model_config()
+assert len(config_list) > 0, "No valid models found in the configuration file."
+
+# Print loaded models for confirmation
+print("Models to use: ", [config["model"] for config in config_list])
+
+# Initialize LLM configuration
+llm_config = {"config_list": config_list, "cache_seed": 42}
+
+# --- AGENTNEO SESSION SETUP ---
+def initialize_agentneo_session(session_name, project_name):
+    """
+    Initialize or connect to an AgentNeo project session.
+
+    Args:
+        session_name (str): Name of the session.
+        project_name (str): Name of the project to create or connect.
+
+    Returns:
+        AgentNeo: Initialized session.
+    """
+    neo_session = AgentNeo(session_name=session_name)
+    try:
+        neo_session.create_project(project_name=project_name)
+    except Exception:
+        neo_session.connect_project(project_name=project_name)
+    return neo_session
+
+# Initialize AgentNeo session
+neo_session = initialize_agentneo_session(session_name="autogen_testing", project_name="testing_agent_project1")
+
+# Start tracing the session
+tracer = Tracer(session=neo_session)
+tracer.start()
+
+# --- GROUP CHAT AGENT CONFIGURATION ---
+def configure_agents():
+    """
+    Configure agents for the group chat.
+
+    Returns:
+        list: Configured agents for the group chat.
+    """
+    # Define the user proxy agent (human administrator)
+    user_proxy = autogen.UserProxyAgent(
+        name="Chinmay",
+        system_message="A human admin.",
+        code_execution_config={
+            "last_n_messages": 2,
+            "work_dir": "groupchat",
+            "use_docker": False,
+        },
+        human_input_mode="TERMINATE",
+    )
+
+    # Define the main assistant agent
+    assistant = autogen.ConversableAgent(
+        name="Sameer",
+        system_message="Create a story on the given topic.",
+        llm_config=llm_config,
+    )
+
+    # Define the helper agent for checking tone and enhancing the story
+    helper = autogen.ConversableAgent(
+        name="Peter",
+        system_message="Check for tone, jump scares, and other factors to make the story interesting.",
+        llm_config=llm_config,
+    )
+
+    # Define another helper agent for suggestions to improve the story
+    helper2 = autogen.ConversableAgent(
+        name="Sam",
+        system_message="Review the story and provide suggestions to make it stunning.",
+        llm_config=llm_config,
+    )
+
+    return user_proxy, [assistant, helper, helper2]
+
+# Configure agents
+user_proxy, chat_agents = configure_agents()
+
+# Define LLM settings for group chat management
+gpt4_config = {"temperature": 0, "config_list": config_list, "timeout": 120}
+
+# --- GROUP CHAT MANAGEMENT ---
+def create_group_chat(user_proxy, chat_agents):
+    """
+    Create and manage a group chat with multiple agents.
+
+    Args:
+        user_proxy (UserProxyAgent): The user-facing proxy agent.
+        chat_agents (list): List of ConversableAgents.
+
+    Returns:
+        GroupChatManager: Manager for handling the group chat.
+    """
+    groupchat = autogen.GroupChat(
+        agents=chat_agents, 
+        messages=[], 
+        max_round=8, 
+        speaker_selection_method="round_robin"
+    )
+    manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=gpt4_config)
+    return manager
+
+# Initialize group chat manager
+groupchat_manager = create_group_chat(user_proxy, chat_agents)
+
+# --- TRACED CHAT INTERACTION ---
+@tracer.trace_agent(name='GroupChatInteraction')
+def run_group_chat():
+    """
+    Run a group chat session with user interaction.
+
+    The user initiates the chat, and agents collaborate to create and refine a story.
+    """
+    user_proxy.initiate_chat(groupchat_manager, message="Write a story about rocks")
+
+# Run the group chat
+run_group_chat()
+
+# Stop the tracer after execution
+tracer.stop()
+
+# Launch the dashboard to visualize the traced interaction
+neo_session.launch_dashboard(port=3000)
